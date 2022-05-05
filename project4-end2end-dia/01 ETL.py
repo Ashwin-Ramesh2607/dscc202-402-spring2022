@@ -68,14 +68,14 @@ for t in tables:
 
 #Selecting and transforming the data from all tables to maintain only relevant data
 #blocks dataframe with necessary data
-blocksDF = blocks.select("timestamp","number","hash").withColumn("timestamp", col("timestamp").cast("timestamp"))
+blocksDF = blocks.select("timestamp","number").withColumn("timestamp", col("timestamp").cast("timestamp"))
 #display(blocksDF)
 
 tokensDF = tokens.select("address","symbol")
 tokenPricesDF = token_prices_usd.select("contract_address","price_usd")
 
 #token transfers with relevant information
-transfersDF = token_transfers.select("token_address","transaction_hash","from_address","to_address","block_number")
+transfersDF = token_transfers.select("token_address","value","from_address","to_address","block_number")
 #display(transfersDF)
 
 #solver contracts filtering of erc20 tokens to be merged with the rest of the data (matched on token address)
@@ -89,24 +89,27 @@ price_tokens = tokenPricesDF.join(tokensDF,(tokenPricesDF.contract_address == to
 #display(price_tokens)
 
 #merging the token transfers with the blocks
-transfer_blocks = transfersDF.join(blocksDF,(transfersDF.block_number == blocksDF.number),'inner').select('token_address','from_address', 'to_address', 'timestamp', 'block_number',)
-display(transfer_blocks)
+transfer_blocks_silver = transfersDF.join(price_tokens,(price_tokens.address == transfersDF.token_address),'inner').select("token_address","symbol","from_address","to_address","value","block_number").join(blocksDF,(blocksDF.number == transfersDF.block_number),'inner').select("token_address","value","from_address","to_address","timestamp")
+#display(transfer_blocks_silver)
 
 # COMMAND ----------
 
-join2.columns
-
-#merging transfer_blocks with potentially the below merge in one command
-
-##merging price_tokens with erc20 contracts only to remove irrelevant contracts
+#writing the resulting table into our database in delta format, partitioned using token address
+sqlContext.setConf("spark.sql.shuffle.partitions","auto")
+(transfer_blocks_silver.write.format("delta").mode("overwrite").partitionBy("token_address").saveAsTable('g07_db.transfer_blocks_silver'))
 
 # COMMAND ----------
 
-display(tokens)
+display(transfersDF)
 
 # COMMAND ----------
 
-display(silver_contracts)
+#Schema assertion on the silver table
+from pyspark.sql.types import _parse_datatype_string
+transfer_blocks_silver = spark.table('g07_db.transfer_blocks_silver')
+
+assert tt_silver.schema == _parse_datatype_string("id: int, to_address: string, from_address: string, value: decimal(38,0), timestamp: timestamp"), "tt_silver schema is not validated"
+print("tt_silver assertion passed")
 
 # COMMAND ----------
 
