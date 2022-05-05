@@ -41,11 +41,17 @@ spark.conf.set('start.date',start_date)
 
 # COMMAND ----------
 
+import json
+from pyspark.sql.session import SparkSession
+from pyspark.sql.types import *
+from pyspark.sql.functions import *
+
 #Reading in the tables
+#Given that bronze tables are in batch form and not being streamed, reading them into dataframes should suffice for the ETL process
 transactions = spark.table("ethereumetl.transactions")
 blocks = spark.table("ethereumetl.blocks")
 receipts = spark.table("ethereumetl.receipts")
-tokens = spark.table("ethereumetl.transactions")
+tokens = spark.table("ethereumetl.tokens")
 token_transfers = spark.table("ethereumetl.token_transfers")
 contracts = spark.table("ethereumetl.contracts")
 silver_contracts = spark.table("ethereumetl.silver_contracts")
@@ -57,6 +63,74 @@ token_prices_usd = spark.table("ethereumetl.token_prices_usd")
 tables=[transactions,blocks,receipts,tokens,token_transfers,contracts,silver_contracts,logs,token_prices_usd] 
 for t in tables:
     t.printSchema()
+
+# COMMAND ----------
+
+#Selecting and transforming the data from all tables to maintain only relevant data
+#blocks dataframe with necessary data
+blocksDF = blocks.select("timestamp","number","hash").withColumn("timestamp", col("timestamp").cast("timestamp"))
+#display(blocksDF)
+
+tokensDF = tokens.select("address","symbol")
+tokenPricesDF = token_prices_usd.select("contract_address","price_usd")
+
+#token transfers with relevant information
+transfersDF = token_transfers.select("token_address","transaction_hash","from_address","to_address","block_number")
+#display(transfersDF)
+
+#solver contracts filtering of erc20 tokens to be merged with the rest of the data (matched on token address)
+erc_contractsDF = silver_contracts.select("address").filter(silver_contracts["is_erc20"]==True)
+#display(erc_contractsDF)  
+
+# COMMAND ----------
+
+#merging token prices/symbols with contract addresses 
+price_tokens = tokenPricesDF.join(tokensDF,(tokenPricesDF.contract_address == tokensDF.address),'inner').select(col("contract_address").alias("address"),'symbol','price_usd')
+#display(price_tokens)
+
+#merging the token transfers with the blocks
+transfer_blocks = transfersDF.join(blocksDF,(transfersDF.block_number == blocksDF.number),'inner').select('token_address','from_address', 'to_address', 'timestamp', 'block_number',)
+display(transfer_blocks)
+
+# COMMAND ----------
+
+join2.columns
+
+#merging transfer_blocks with potentially the below merge in one command
+
+##merging price_tokens with erc20 contracts only to remove irrelevant contracts
+
+# COMMAND ----------
+
+display(tokens)
+
+# COMMAND ----------
+
+display(silver_contracts)
+
+# COMMAND ----------
+
+display(receipts)
+
+# COMMAND ----------
+
+display(tokens)
+
+# COMMAND ----------
+
+display(transactions)
+
+# COMMAND ----------
+
+display(transactions)
+
+# COMMAND ----------
+
+display(transactions)
+
+# COMMAND ----------
+
+display(transactions)
 
 # COMMAND ----------
 
