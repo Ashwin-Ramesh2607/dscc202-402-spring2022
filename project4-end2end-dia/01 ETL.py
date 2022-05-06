@@ -37,7 +37,9 @@ spark.conf.set('start.date',start_date)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## YOUR SOLUTION STARTS HERE...
+# MAGIC ### Our ETL Pipeline is documented in the below diagram
+# MAGIC 
+# MAGIC <tr><td><img src='https://www.linkpicture.com/q/G07_ETL-1.png' width=900 height=500></td></tr>
 
 # COMMAND ----------
 
