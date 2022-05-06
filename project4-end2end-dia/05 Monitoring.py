@@ -25,87 +25,81 @@ print(wallet_address,start_date)
 
 # COMMAND ----------
 
-import mlflow
-from pprint import pprint
+# Read in final modeling data from the table stored in our database
+tripletDF = spark.table('g07_db.final_modelling').cache()
+tripletDF = tripletDF.withColumnRenamed("addr_id", "user_int_id").withColumnRenamed("token_id", "token_int_id").withColumnRenamed("balance_usd", "active_holding_usd")
+tripletDF = tripletDF.dropna(how="any", subset="active_holding_usd")
+
+# Predict for a single user
+from pyspark.sql import functions as F
+tokensDF = spark.table("g07_db.toks_silver").cache()
+addressesDF = spark.table("g07_db.wallet_addrs").cache() 
+# UserID = addressesDF[addressesDF['addr']==wallet_address].collect()[0][1]
+# print(UserID)
+UserID = 1068072 
+users_tokens = tripletDF.filter(tripletDF.aaddress_id == UserID).join(tokensDF, tokensDF.id==tripletDF.token_int_id).select('token_int_id', 'name', 'symbol')                                           
+# generate list of tokens held 
+tokens_held_list = [] 
+# for tok in users_tokens.collect():   
+#     tokens_held_list.append(tok['name'])  
+print('Tokens user has held:') 
+users_tokens.select('name').show() 
+
+# COMMAND ----------
+
+tokens_not_held = tripletDF.filter(~ tripletDF['token_int_id'].isin([token['token_int_id'] for token in users_tokens.collect()])).select('token_int_id').withColumn('user_int_id', F.lit(UserID)).distinct()
+
+# Print prediction output for staging model
+model = mlflow.spark.load_model('models:/'+'ALS1'+'/Staging')
+predicted_toks = model.transform(tokens_not_held)
+    
+print('Predicted Tokens:')
+toppredictions = predicted_toks.join(tripletDF, 'token_int_id') \
+                 .join(tokensDF, tokensDF.id==tripletDF.token_int_id) \
+                 .select('name', 'symbol') \
+                 .distinct() \
+                 .orderBy('prediction', ascending = False)
+print(toppredictions.show(5))
+
+# COMMAND ----------
+
+# Print prediction output for production model
+model = mlflow.spark.load_model('models:/'+'ALS1'+'/Production')
+predicted_toks = model.transform(tokens_not_held)
+    
+print('Predicted Tokens:')
+toppredictions = predicted_toks.join(tripletDF, 'token_int_id') \
+                 .join(tokensDF, tokensDF.id==tripletDF.token_int_id) \
+                 .select('name', 'symbol') \
+                 .distinct() \
+                 .orderBy('prediction', ascending = False)
+print(toppredictions.show(5))
+
+# COMMAND ----------
+
+# Get staging and production models
 from mlflow.tracking import MlflowClient
-import plotly.express as px
-from datetime import timedelta, datetime
-import numpy as np
-import pandas as pd
-
 client = MlflowClient()
-
-#Getting walletaddress
-wallet_address = str(dbutils.widgets.get('00.Wallet_Address'))
-
-#Model names for staging and production
-model_name_staging = "g07_staging_model"
-model_name_production = "g07_production_model"
-
-mlflow.set_experiment('experiment_path')
-
-# accessing the model versions in staging
-stage_version = None
-
-for modelv in client.search_model_versions(f"name='{model_name_staging}'"):
-    if dict(modelv)['current_stage'] == 'Staging':
-    stage_version=dict(modelv)['version']
-
-if stage_version is not None:
-    stage_model = mlflow.pyfunc.load_model(f"models:/{model_name_staging}/Staging")
-    print("Staging Model: ", stage_model)
-
-
-# accessing the model versions in staging
-prod_version = None
-
-for modelv in client.search_model_versions(f"name='{model_name_production}'"):
-    if dict(modelv)['current_stage'] == 'Production':
-    prod_version=dict(modelv)['version']
-
-if prod_version is not None:
-    prod_model = mlflow.pyfunc.load_model(f"models:/{model_name_production}/Production")
-    print("Production Model: ", prod_model)
-
-
-#accessing the database of our group (07)
-databaseName = "g07_db"
-
-#selecting the data pertaining to the specific wallet
-dataset = spark.sql(''' SELECT * FROM {0}.silver{1}_delta  
-                        WHERE wallet_id = {3}'''.format(databaseName, model_type, wallet_address,)) 
-#!!!!!REPLACE WITH .SILVERTABLE FROM ETL/MODEL AND WALLTER ID VARIABLE!!!!!
-
-
-# Recommendation using the production and staging models
-recommendations_staging_df = dataset.toPandas().fillna(method='ffill').fillna(method='bfill')
-recommendations_staging_df['model'] = 'Staging'
-recommendations_staging_df['ypred'] = stage_model.predict(pd.DataFrame(recommendations_production_df,axis=1).values)
-
-recommendations_production_df = dataset.toPandas().fillna(method='ffill').fillna(method='bfill')
-recommendations_production_df['model'] = 'Production'
-recommendations_production_df['ypred'] = prod_model.predict(pd.DataFrame(recommendations_production_df,axis=1).values)
-
-df = pd.concat([recommendations_staging_df,recommendations_production_df]).reset_index()
-
-labels={
-   "ypred": "value",
-   "model": "Model Stage"
-   }
-
-fig = px.line(df, x="hour", y="yhat", color='model', title=f"{airport_code} Delay Forecast by Model Stage", labels=labels)
-fig.show()
-
-
-##Monitoring 
+run_stage = client.get_latest_versions('ALS1', ["Staging"])[0]
+run_prod = client.get_latest_versions('ALS1', ["Production"])[0]
+ 
+# Gets version of staged model
+run_staging=run_stage.version
+ 
+# Gets version of production model
+run_production=run_prod.version
 
 # COMMAND ----------
 
+#print(client.get_metric_history(run_id=run_stage.run_id, key='rsme'))
 
-
-# COMMAND ----------
-
-
+rsmes = [client.get_metric_history(run_id=run_stage.run_id, key='rsme')[0].value, client.get_metric_history(run_id=run_prod.run_id, key='rsme')[0].value]
+stage = ['Staging', 'Production']
+ 
+import matplotlib.pyplot as plt
+plt.bar(stage,rsmes)
+plt.ylabel("RSME")
+plt.show()
 
 # COMMAND ----------
 
