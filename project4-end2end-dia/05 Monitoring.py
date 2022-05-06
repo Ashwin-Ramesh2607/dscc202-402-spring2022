@@ -71,14 +71,33 @@ if prod_version is not None:
 #accessing the database of our group (07)
 databaseName = "g07_db"
 
-#selecting the data pertaining to the wallet
+#selecting the data pertaining to the specific wallet
 dataset = spark.sql(''' SELECT * FROM {0}.silver{1}_delta  
                         WHERE wallet_id = {3}'''.format(databaseName, model_type, wallet_address,)) 
 #!!!!!REPLACE WITH .SILVERTABLE FROM ETL/MODEL AND WALLTER ID VARIABLE!!!!!
 
 
 # Recommendation using the production and staging models
+recommendations_staging_df = dataset.toPandas().fillna(method='ffill').fillna(method='bfill')
+recommendations_staging_df['model'] = 'Staging'
+recommendations_staging_df['ypred'] = stage_model.predict(pd.DataFrame(recommendations_production_df,axis=1).values)
 
+recommendations_production_df = dataset.toPandas().fillna(method='ffill').fillna(method='bfill')
+recommendations_production_df['model'] = 'Production'
+recommendations_production_df['ypred'] = prod_model.predict(pd.DataFrame(recommendations_production_df,axis=1).values)
+
+df = pd.concat([recommendations_staging_df,recommendations_production_df]).reset_index()
+
+labels={
+   "ypred": "value",
+   "model": "Model Stage"
+   }
+
+fig = px.line(df, x="hour", y="yhat", color='model', title=f"{airport_code} Delay Forecast by Model Stage", labels=labels)
+fig.show()
+
+
+##Monitoring 
 
 # COMMAND ----------
 
