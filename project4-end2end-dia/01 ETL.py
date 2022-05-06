@@ -41,101 +41,266 @@ spark.conf.set('start.date',start_date)
 
 # COMMAND ----------
 
-import json
-from pyspark.sql.session import SparkSession
-from pyspark.sql.types import *
-from pyspark.sql.functions import *
-
-#Reading in the tables
-#Given that bronze tables are in batch form and not being streamed, reading them into dataframes should suffice for the ETL process
-transactions = spark.table("ethereumetl.transactions")
-blocks = spark.table("ethereumetl.blocks")
-receipts = spark.table("ethereumetl.receipts")
-tokens = spark.table("ethereumetl.tokens")
-token_transfers = spark.table("ethereumetl.token_transfers")
-contracts = spark.table("ethereumetl.contracts")
-silver_contracts = spark.table("ethereumetl.silver_contracts")
-logs = spark.table("ethereumetl.logs")
-token_prices_usd = spark.table("ethereumetl.token_prices_usd") 
+# Import the necessary libraries
+import pyspark
 
 # COMMAND ----------
 
-tables=[transactions,blocks,receipts,tokens,token_transfers,contracts,silver_contracts,logs,token_prices_usd] 
-for t in tables:
-    t.printSchema()
+# MAGIC %md
+# MAGIC ##### ETL Pipeline to generate tokens_silver_table
 
 # COMMAND ----------
 
-#Selecting and transforming the data from all tables to maintain only relevant data
-#blocks dataframe with necessary data
-blocksDF = blocks.select("timestamp","number").withColumn("timestamp", col("timestamp").cast("timestamp"))
-#display(blocksDF)
-
-tokensDF = tokens.select("address","symbol")
-tokenPricesDF = token_prices_usd.select("contract_address","price_usd")
-
-#token transfers with relevant information
-transfersDF = token_transfers.select("token_address","value","from_address","to_address","block_number")
-#display(transfersDF)
-
-#solver contracts filtering of erc20 tokens to be merged with the rest of the data (matched on token address)
-erc_contractsDF = silver_contracts.select("address").filter(silver_contracts["is_erc20"]==True)
-#display(erc_contractsDF)  
+# Read bronze data sources
+tokens_bronze_table = spark.table('ethereumetl.tokens')
+token_prices_usd_bronze_table = spark.table('ethereumetl.token_prices_usd')
+ 
+# Schema validation
+assert tokens_bronze_table.schema == pyspark.sql.types._parse_datatype_string(
+    '''
+    address: string,
+    symbol: string,
+    name: string,
+    decimals: bigint,
+    total_supply: decimal(38, 0),
+    start_block: bigint,
+    end_block: bigint
+    '''
+), 'Schema validation for tokens_bronze_table failed'
+print('Schema validation for tokens_bronze_table succeeded')
+ 
+assert token_prices_usd_bronze_table.schema == pyspark.sql.types._parse_datatype_string(
+    '''
+    id: string,
+    symbol: string,
+    name: string,
+    asset_platform_id: string,
+    description: string,
+    links: string,
+    image: string,
+    contract_address: string,
+    sentiment_votes_up_percentage: double,
+    sentiment_votes_down_percentage: double,
+    market_cap_rank: double,
+    coingecko_rank: double,
+    coingecko_score: double,
+    developer_score: double,
+    community_score: double,
+    liquidity_score: double,
+    public_interest_score: double,
+    price_usd: double
+    '''
+), 'Schema validation for token_prices_usd_bronze_table failed'
+print('Schema validation for token_prices_usd_bronze_table succeeded')
+ 
+# Bronze-to-Silver transformation
+# 1. Inner join between tokens_bronze_table and token_prices_usd_bronze_table on contract_address
+# 2. Extract only rows where asset_platform_id is ethereum
+# 3. Select only the relevant columns
+# 4. Drop duplicates on address column
+# 5. Correct the ID column after performing a join operation
+# 6. Repartition on address to give a hash-partitioned dataframe
+tokens_silver_table = token_prices_usd_bronze_table \
+    .join(tokens_bronze_table, (tokens_bronze_table.address == token_prices_usd_bronze_table.contract_address), 'inner') \
+    .where(token_prices_usd_bronze_table.asset_platform_id == 'ethereum') \
+    .select(
+        col('ethereumetl.token_prices_usd.contract_address').alias('address'),
+        col('ethereumetl.tokens.name'),
+        col('ethereumetl.tokens.symbol'),
+        col('ethereumetl.token_prices_usd.price_usd')) \
+    .dropDuplicates(['address']) \
+    .withColumn('id', row_number().over(pyspark.sql.window.Window.orderBy(lit(1)))) \
+    .repartition('address')
+ 
+# Write the tokens_silver_table into the group's database
+tokens_silver_table \
+    .write \
+    .format('delta') \
+    .mode('overwrite') \
+    .partitionBy('address') \
+    .saveAsTable('g07_db.tokens_silver')
+ 
+# Perform z-ordering optimization
+spark.sql('OPTIMIZE g07_db.tokens_silver ZORDER BY address')
+ 
+print('ETL Pipeline to generate tokens_silver_table succeeded')
 
 # COMMAND ----------
 
-#merging token prices/symbols with contract addresses 
-price_tokens = tokenPricesDF.join(tokensDF,(tokenPricesDF.contract_address == tokensDF.address),'inner').select(col("contract_address").alias("address"),'symbol','price_usd')
-#display(price_tokens)
-
-#merging the token transfers with the blocks
-transfer_blocks_silver = transfersDF.join(price_tokens,(price_tokens.address == transfersDF.token_address),'inner').select("token_address","symbol","from_address","to_address","value","block_number").join(blocksDF,(blocksDF.number == transfersDF.block_number),'inner').select("token_address","value","from_address","to_address","timestamp")
-#display(transfer_blocks_silver)
+# MAGIC %md
+# MAGIC ##### ETL Pipeline for wallet_addresses_table
 
 # COMMAND ----------
 
-#writing the resulting table into our database in delta format, partitioned using token address
-sqlContext.setConf("spark.sql.shuffle.partitions","auto")
-(transfer_blocks_silver.write.format("delta").mode("overwrite").partitionBy("token_address").saveAsTable('g07_db.transfer_blocks_silver'))
+# Read bronze data sources
+blocks_bronze_table = spark.table('ethereumetl.blocks')
+token_transfers_bronze_table = spark.table('ethereumetl.token_transfers')
+ 
+# Schema validation
+assert blocks_bronze_table.schema == pyspark.sql.types._parse_datatype_string(
+    '''
+    number: long,
+    hash: string,
+    parent_hash: string,
+    nonce: string,
+    sha3_uncles: string,
+    logs_bloom: string,
+    transactions_root: string,
+    state_root: string,
+    receipts_root: string,
+    miner: string,
+    difficulty: decimal(38, 0),
+    total_difficulty: decimal(38, 0),
+    size: long,
+    extra_data: string,
+    gas_limit: long,
+    gas_used: long,
+    timestamp: long,
+    transaction_count: long,
+    start_block: long,
+    end_block: long
+    '''
+), 'Schema validation for blocks_bronze_table failed'
+print('Schema validation for blocks_bronze_table succeeded')
+ 
+assert token_transfers_bronze_table.schema == pyspark.sql.types._parse_datatype_string(
+    '''
+    token_address: string,
+    from_address: string,
+    to_address: string,
+    value: decimal(38, 0),
+    transaction_hash: string,
+    log_index: long,
+    block_number: long,
+    start_block: long,
+    end_block: long
+    '''
+), 'Schema validation for token_transfers_bronze_table failed'
+print('Schema validation for token_transfers_bronze_table succeeded')
+ 
+# Bronze-to-Silver transformation
+# 1. Inner join between tokens_silver_table and token_transfers_bronze_table on token_address
+# 2. Inner join between blocks_bronze_table and token_transfers_bronze_table on block_number
+# 3. Select only the relevant columns
+# 4. Timestamp formatting for the timestamp column
+# 5. Repartition on ID to give a hash-partitioned dataframe
+tokens_transfers_silver_table = token_transfers_bronze_table \
+    .join(tokens_silver_table, (tokens_silver_table.address == token_transfers_bronze_table.token_address), 'inner') \
+    .join(blocks_bronze_table, (blocks_bronze_table.number == token_transfers_bronze_table.block_number), 'inner') \
+    .select('id', 'to_address', 'from_address', 'value', 'timestamp') \
+    .withColumn('timestamp', col('timestamp').cast('timestamp')) \
+    .repartition('id')
+ 
+print('Bronze-to-Silver transformation for token_transfers_bronze_table succeeded')
+ 
+# Extract the purchased tokens from tokens_transfers_silver_table
+ 
+# Transformation
+# 1. GroupBy the ID and to_address
+# 2. Add the value column
+# 3. Repartition on ID to give a hash-partitioned dataframe
+purchased_tokens_table = tokens_transfers_silver_table \
+    .groupBy('id', 'to_address') \
+    .agg(sum('value').alias('total_buy_value')) \
+    .repartition('id')
+ 
+print('Purchased tokens transformation for purchased_tokens_table succeeded')
+ 
+# Extract the sold tokens from tokens_transfers_silver_table
+ 
+# Transformation
+# 1. GroupBy the ID and from_address
+# 2. Add the value column
+# 3. Repartition on ID to give a hash-partitioned dataframe
+sold_tokens_table = tokens_transfers_silver_table \
+    .groupBy('id', 'from_address') \
+    .agg(sum('value').alias('total_sell_value')) \
+    .repartition('id')
+ 
+print('Sold tokens transformation for sold_tokens_table succeeded')
+ 
+# Compute the balance value for purchased & sold tokens from purchased_tokens_table and sold_tokens_table
+ 
+# Transformation
+# 1. Join the 2 tables for matching token IDs and corresponding addresses
+# 2. Compute the balance
+# 3. Rename and select the appropriate columns
+# 4. Repartition on ID to give a hash-partitioned dataframe
+balance_tokens_table = purchased_tokens_table \
+    .join(sold_tokens_table, (purchased_tokens_table.id == sold_tokens_table.id) & (purchased_tokens_table.to_address == sold_tokens_table.from_address), 'inner') \
+    .withColumn('balance', purchased_tokens_table.total_buy_value - sold_tokens_table.total_sell_value) \
+    .withColumnRenamed('to_address', 'address') \
+    .select('address', purchased_tokens_table.id, 'balance') \
+    .repartition('id')
+ 
+print('Balance value transformation for balance_tokens_table succeeded')
+ 
+# Compute the USD balance value for purchased & sold tokens using balance_tokens_table and tokens_silver_table
+ 
+# Transformation
+# 1. Join the 2 tables for matching token IDs
+# 2. Compute the USD balance
+# 3. Select the appropriate columns
+# 4. Repartition on ID to give a hash-partitioned dataframe
+used_balance_tokens_table = balance_tokens_table \
+    .join(tokens_silver_table, balance_tokens_table.id == tokens_silver_table.id, 'inner') \
+    .withColumn('balance_usd', balance_tokens_table.balance * tokens_silver_table.price_usd) \
+    .select(balance_tokens_table.address, balance_tokens_table.id, 'balance_usd')\
+    .repartition('id')
+ 
+print('USD balance value transformation for used_balance_tokens_table succeeded')
+ 
+# Contruct the wallet_addresses_table by assigning IDs for unique addresses
+ 
+# Transformation
+# 1. Select unique addresses
+# 2. Assign an ID for each unique address
+wallet_addresses_table = used_balance_tokens_table \
+    .select('address').distinct() \
+    .withColumn('address_id', row_number().over(pyspark.sql.window.Window.orderBy(lit(1))))
+ 
+# Write the wallet_addresses_table into the group's database
+wallet_addresses_table \
+    .write \
+    .format('delta') \
+    .mode('overwrite') \
+    .saveAsTable('g07_db.wallet_addresses')
+ 
+# Perform z-ordering optimization
+spark.sql('OPTIMIZE g07_db.wallet_addresses ZORDER BY address')
+ 
+print('ETL Pipeline to generate wallet_addresses_table succeeded')
 
 # COMMAND ----------
 
-display(transfersDF)
+# MAGIC %md
+# MAGIC ##### ETL Pipeline for final_modelling_table
 
 # COMMAND ----------
 
-#Schema assertion on the silver table
-from pyspark.sql.types import _parse_datatype_string
-transfer_blocks_silver = spark.table('g07_db.transfer_blocks_silver')
-
-assert tt_silver.schema == _parse_datatype_string("id: int, to_address: string, from_address: string, value: decimal(38,0), timestamp: timestamp"), "tt_silver schema is not validated"
-print("tt_silver assertion passed")
-
-# COMMAND ----------
-
-display(receipts)
-
-# COMMAND ----------
-
-display(tokens)
-
-# COMMAND ----------
-
-display(transactions)
-
-# COMMAND ----------
-
-display(transactions)
-
-# COMMAND ----------
-
-display(transactions)
-
-# COMMAND ----------
-
-display(transactions)
+# Contruct the final_modelling_table by selecting the relevant features for modelling
+ 
+# Transformation
+# 1.Join used_balance_tokens_table and wallet_addresses_table on address
+# 2. Select and rename the relevant columns
+final_modelling_table = used_balance_tokens_table \
+    .join(wallet_addresses_table, used_balance_tokens_table.address == wallet_addresses_table.address, 'inner') \
+    .select(wallet_addresses_table.address_id, used_balance_tokens_table.id, 'balance_usd')\
+    .withColumnRenamed('id', 'token_id')
+ 
+# Write the final_modelling_table into the group's database
+final_modelling_table \
+    .write \
+    .format('delta') \
+    .mode('overwrite') \
+    .saveAsTable('g07_db.final_modelling')
+ 
+# Perform z-ordering optimization
+spark.sql('OPTIMIZE g07_db.final_modelling ZORDER BY address_id')
+ 
+print('ETL Pipeline to generate final_modelling_table succeeded')
 
 # COMMAND ----------
 
 # Return Success
-dbutils.notebook.exit(json.dumps({"exit_code": "OK"}))
+dbutils.notebook.exit(json.dumps({'exit_code': 'OK'}))
