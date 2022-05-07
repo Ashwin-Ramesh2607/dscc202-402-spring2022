@@ -37,7 +37,15 @@
 
 -- COMMAND ----------
 
--- TBD
+-- MAGIC %sql
+-- MAGIC SELECT number,to_date(cast(timestamp as TIMESTAMP)) as DATE_ from ethereumetl.blocks
+-- MAGIC order by number desc
+-- MAGIC limit 1;
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC maximum block number is 14044000 and date of block in the database is 2022-01-20
 
 -- COMMAND ----------
 
@@ -46,7 +54,12 @@
 
 -- COMMAND ----------
 
--- TBD
+select min(block_number) from g07_db.EDA_erc20;
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC The first ERC20 transfer happened at block 913198
 
 -- COMMAND ----------
 
@@ -55,7 +68,13 @@
 
 -- COMMAND ----------
 
--- TBD
+SELECT COUNT(*) from ethereumetl.silver_contracts
+where is_erc20 = True;
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC There are 181937 ERC20 compatible contracts.
 
 -- COMMAND ----------
 
@@ -64,7 +83,16 @@
 
 -- COMMAND ----------
 
--- TBD
+USE ETHEREUMETL;
+
+select (sum(cast((silver_contracts.address is not null) as integer))/count(1))*100 as calls_to_contract_percent 
+from transactions 
+left join silver_contracts on transactions.to_address = silver_contracts.address;
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC 45.742 % of transactions are calls to contracts
 
 -- COMMAND ----------
 
@@ -73,7 +101,13 @@
 
 -- COMMAND ----------
 
--- TBD
+USE ETHEREUMETL;
+select
+token_address, count(distinct (transaction_hash)) as transfer_count
+from token_transfers
+group by token_address
+order by transfer_count desc
+limit 100;
 
 -- COMMAND ----------
 
@@ -83,7 +117,13 @@
 
 -- COMMAND ----------
 
--- TBD
+select count(distinct concat(token_address, to_address))/count(token_address) as fraction_value
+from g07_db.EDA_erc20;
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC Approximately 3/10 ERC-20 transfers are sent to new addresses
 
 -- COMMAND ----------
 
@@ -93,7 +133,33 @@
 
 -- COMMAND ----------
 
--- TBD
+select number,transaction_count from ethereumetl.blocks
+where transaction_count > 1
+and start_block in (select distinct start_block from transactions)
+order by transaction_count desc
+limit 5;
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC From the above cell's output, we do have the block numbers where there were more than one transactions. Now we will randomly choose a block and look for relation between transaction and gas price.
+
+-- COMMAND ----------
+
+-- MAGIC %python
+-- MAGIC spark.sql("show partitions transactions").show(100000,truncate=False)
+
+-- COMMAND ----------
+
+SELECT  block_number, transaction_index, gas_price 
+FROM transactions 
+WHERE start_block >=13710100 and end_block <= 13873035 and block_number in (13782464,13644381,13701572)
+;
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC From the output cell, we can see that transactions are ordered in decreasing gas price for the same block number.
 
 -- COMMAND ----------
 
@@ -103,7 +169,12 @@
 
 -- COMMAND ----------
 
--- TBD
+select max(transaction_count)/15 as highest_transaction_throughput from ethereumetl.blocks
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC Highest transaction throughput in transactions per second was 95.4
 
 -- COMMAND ----------
 
@@ -113,7 +184,12 @@
 
 -- COMMAND ----------
 
--- TBD
+select sum(value)/power(10,18) as TOTAL_ETHER_VOL from ethereumetl.transactions
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC Total Ether Volume is : 4819303728.848482
 
 -- COMMAND ----------
 
@@ -122,7 +198,13 @@
 
 -- COMMAND ----------
 
--- TBD
+select sum(gas) as Total_gas_used
+from ethereumetl.transactions;
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC The Total Gas Used in all transactions is : 26962124687146 
 
 -- COMMAND ----------
 
@@ -131,7 +213,13 @@
 
 -- COMMAND ----------
 
--- TBD
+select transaction_hash, count(*) from g07_db.eda_erc20 group by transaction_hash
+order by count(*) desc;
+
+-- COMMAND ----------
+
+-- MAGIC %md
+-- MAGIC Max number of ERC-20 tokens in a transaction is 3001 
 
 -- COMMAND ----------
 
@@ -140,7 +228,16 @@
 
 -- COMMAND ----------
 
--- TBD
+select token_address, sum(case when from_address = '${wallet.address}' then -1*value else value end) as token_balance
+from ethereumetl.token_transfers as table_1
+inner join ethereumetl.blocks table_2 on
+table_2.start_block = table_1.start_block and 
+table_2.end_block = table_1.end_block and
+table_2.number = table_1.block_number and
+to_date(cast(table_2.timestamp as TIMESTAMP)) <= '${start.date}' and
+(from_address = '${wallet.address}' or to_address = '${wallet.address}')
+group by token_address
+order by token_balance ;
 
 -- COMMAND ----------
 
@@ -149,7 +246,9 @@
 
 -- COMMAND ----------
 
--- TBD
+select to_date(CAST(timestamp as timestamp)) as Date,sum(transaction_count) as trans_count_per_day from blocks
+group by date
+order by date desc
 
 -- COMMAND ----------
 
@@ -159,8 +258,18 @@
 
 -- COMMAND ----------
 
--- TBD
+use ethereumetl;
 
+select date, sum(transfer_count) as trans_count_per_day
+ from(select start_block, end_block, number, to_date(CAST(timestamp AS timestamp)) as Date from blocks) as table_1 
+ left join
+ (select start_block, end_block, block_number, count(distinct transaction_hash) as transfer_count from g07_db.eda_erc20
+   group by start_block, end_block, block_number) as table_2
+ on table_1.start_block = table_2.start_block 
+ and table_1.end_block = table_2.end_block 
+ and table_1.number = table_2.block_number
+ group by date
+ order by date desc;
 
 -- COMMAND ----------
 
