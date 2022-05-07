@@ -239,9 +239,9 @@ class EthereumTokenRecommender:
 
 # Create an instance of the EthereumTokenRecommender class
 ethereum_token_recommender = EthereumTokenRecommender(
-    user_name='aramesh4', # Modify for each teammate
+    user_name='kganer', # Modify for each teammate
     group_name='G07',
-    model_name='ALS-5',
+    model_name='ALS1',
     tokens_path='g07_db.tokens_silver',
     addresses_path='g07_db.wallet_addresses',
     dataset_path='g07_db.final_modelling',
@@ -268,9 +268,11 @@ ethereum_token_recommender.test()
 # COMMAND ----------
 
 # Recommend tokens for a user
-user_wallet_address = "0x0a21a99a97d4b3f309860917cf1c9c8c82e32edc" #should be that of a erc20 token from g07_db.wallet_addresses
+user_wallet_address = "0x0a21a99a97d4b3f309860917cf1c9c8c82e32edc"#should be that of a erc20 token from g07_db.wallet_addresses
+addresses_df = spark.table("g07_db.wallet_addresses")
+user_id_ = addresses_df[addresses_df['address']==user_wallet_address].collect()[0][1]
 ethereum_token_recommender.infer(
-    user_id=addresses_df[addresses_df['address']==user_wallet_address].collect()[0][1],
+    user_id=user_id_,
     top_k=15
 )
 
