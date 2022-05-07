@@ -269,7 +269,7 @@ ethereum_token_recommender.test()
 
 # Recommend tokens for a user
 ethereum_token_recommender.infer(
-    user_id=18330252,
+    user_id=addresses_df[addresses_df['address']=='0x0a21a99a97d4b3f309860917cf1c9c8c82e32edc'].collect()[0][1],
     top_k=15
 )
 
