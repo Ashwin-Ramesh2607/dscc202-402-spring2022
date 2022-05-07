@@ -304,5 +304,30 @@ print('ETL Pipeline to generate final_modelling_table succeeded')
 
 # COMMAND ----------
 
+# MAGIC %sql
+# MAGIC SET hive.exec.dynamic.partition = true;
+# MAGIC SET hive.exec.dynamic.partition.mode = nonstrict;
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC The code in the cell below creates a new table of only erc20 token transfers. It has been commented as it takes approximately 2.5-3 hours to create.
+# MAGIC This Table has been used only for EDA purposes, in order to save time where the questions asked were related to erc20 tokens
+
+# COMMAND ----------
+
+# spark.sql("drop table if exists g07_db.EDA_erc20")
+# spark.sql("create table g07_db.EDA_erc20 LIKE ethereumetl.token_transfers")
+
+# spark.sql("""
+# insert into g07_db.EDA_erc20
+# partition(start_block, end_block) 
+# select * 
+# from ethereumetl.token_transfers
+# where token_address in (select address from ethereumetl.silver_contracts where is_erc20 = True)
+# """)
+
+# COMMAND ----------
+
 # Return Success
 dbutils.notebook.exit(json.dumps({'exit_code': 'OK'}))
