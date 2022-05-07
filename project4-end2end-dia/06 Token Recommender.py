@@ -27,7 +27,38 @@ print(wallet_address,start_date)
 
 # COMMAND ----------
 
+recommend = spark.sql("""
+SELECT ethereumetl.token_prices_usd.name, g07_db.user_recommendations.symbol,links,market_cap_rank,asset_platform_id,image,contract_address
+FROM g07_db.user_recommendations
+LEFT JOIN ethereumetl.token_prices_usd ON UPPER(g07_db.user_recommendations.symbol) = UPPER(ethereumetl.token_prices_usd.symbol)
+ORDER BY market_cap_rank,coingecko_rank ASC
+""").toPandas()
+recommend = recommend.dropna(subset=['market_cap_rank']).drop_duplicates(subset=['name'])
+recommend = recommend[recommend.asset_platform_id=="ethereum"].head(10)
+recommend = recommend[['name','symbol','links','image','contract_address']]
+recommend.reset_index(drop=True, inplace=True)
+recommend
 
+# COMMAND ----------
+
+
+recommendations = ""
+for index, row in recommend.iterrows():
+    recommendations += """
+    <tr>
+      <td style="height:60px"><img src="{2}"></td>          
+      <td style="height:60px">{0} ({1})</td>          
+      <td style="height:60px"> <a href="https://etherscan.io/address/{3}"> <img src="https://s1.ax1x.com/2022/05/07/OMAEcj.png" alt="OMAEcj.png" width="28" height="28" /> </a> </td>
+    </tr>
+    """.format(row["name"], row["symbol"], row["image"] , row["contract_address"])
+ 
+displayHTML("""
+    <h3>Recommend Tokens for User Address:</h3>
+    <span style="color:#92948f">""" + wallet_address + """</span>
+    <table style="padding:10px 30px 0 10px">
+    {0}
+    </table>
+""".format(recommendations))
 
 # COMMAND ----------
 
