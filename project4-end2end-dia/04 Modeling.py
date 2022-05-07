@@ -268,8 +268,9 @@ ethereum_token_recommender.test()
 # COMMAND ----------
 
 # Recommend tokens for a user
+user_wallet_address = "0x0a21a99a97d4b3f309860917cf1c9c8c82e32edc" #should be that of a erc20 token from g07_db.wallet_addresses
 ethereum_token_recommender.infer(
-    user_id=addresses_df[addresses_df['address']=='0x0a21a99a97d4b3f309860917cf1c9c8c82e32edc'].collect()[0][1],
+    user_id=addresses_df[addresses_df['address']==user_wallet_address].collect()[0][1],
     top_k=15
 )
 
